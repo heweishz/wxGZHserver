@@ -1,0 +1,39 @@
+{
+  "button": [
+    {
+      "type": "view",
+      "name": "商城",
+      "url": "https://freedoll.whtec.net"
+    },
+    {
+      "type": "view",
+      "name": "我程序",
+      "url": "https://www.whtec.net"
+    },
+    {
+      "name": "桅梁科技",
+      "sub_button": [
+        {
+          "type": "click",
+          "name": "message",
+          "key": "hello"
+        },
+        {
+          "type": "view",
+          "name": "大程序",
+          "url": "https://gzh.whtec.net"
+        }
+      ]
+    }
+  ],
+  "matchrule": {
+    "tag_id": "1",
+    "group_id": "",
+    "sex": "",
+    "country": "",
+    "province": "",
+    "city": "",
+    "client_platform_type": "",
+    "language": ""
+  }
+}
