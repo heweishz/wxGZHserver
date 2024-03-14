@@ -20,7 +20,7 @@ const prepay = asyncHandler(async (req, res) => {
     appid: process.env.APPID,
     mchid: process.env.MCHID,
     description: subject,
-    attach: JSON.stringify({ company: 'whtec', product: 'doll' }),
+    attach: JSON.stringify({ subject }),
     out_trade_no: out_trade_no,
     notify_url: process.env.NOTIFY_URL,
     amount: { total: parseFloat(money) },
@@ -115,6 +115,13 @@ const notify = asyncHandler(async (req, res) => {
       let result = decryptBody(req.body.resource);
       result = JSON.parse(result);
       console.log(result, 'wxNotify');
+      const notifyFeedback = axios.post(
+        'https://freedoll.whtec.net/api/payment/wxGZHpayment',
+        {
+          ...result,
+        }
+      );
+      console.log(notifyFeedback.data, '<<notifyFeedback');
       return res.send('ok');
     } else {
       //update cert in DB from official chanel
