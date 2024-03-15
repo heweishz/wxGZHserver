@@ -6,21 +6,19 @@ import camelCase from 'camelcase';
 import crypto from 'crypto';
 import CertModel from '../Models/CertModel.js';
 
-const BASE_API = 'https://api.mch.weixin.qq.com';
-const API_PAY = 'https://api.mch.weixin.qq.com/v3/pay/transactions/jsapi';
-
 // @desc    get prepay_id
 // @route   POST /payment/prepay
 // @access  Public
 const prepay = asyncHandler(async (req, res) => {
-  const { money, openid, subject, out_trade_no } = req.body;
+  const API_PAY = 'https://api.mch.weixin.qq.com/v3/pay/transactions/jsapi';
+  const { money, openid, subject, out_trade_no, callbackToken } = req.body;
   let timeStamp = util.getTimeStamp();
   let nonceStr = util.getGuid();
   let body = {
     appid: process.env.APPID,
     mchid: process.env.MCHID,
     description: subject,
-    attach: JSON.stringify({ subject }),
+    attach: JSON.stringify({ subject, callbackToken }),
     out_trade_no: out_trade_no,
     notify_url: process.env.NOTIFY_URL,
     amount: { total: parseFloat(money) },
@@ -67,6 +65,7 @@ const prepay = asyncHandler(async (req, res) => {
 // @route   POST /payment/notify
 // @access  Public
 const notify = asyncHandler(async (req, res) => {
+  const BASE_API = 'https://api.mch.weixin.qq.com';
   const header_serial = req.get('wechatpay-serial');
   let timeStamp = util.getTimeStamp();
   let nonceStr = util.getGuid();
@@ -74,9 +73,9 @@ const notify = asyncHandler(async (req, res) => {
   let message = joinMessage('GET', pathName, timeStamp, nonceStr, '');
   let signature = calcSign(message);
   let authMessage = joinAuthMessage(timeStamp, nonceStr, signature);
-  const cert01 = await CertModel.findOne();
-  if (cert01) {
-    const cert = JSON.parse(cert01.cert);
+  let cert = await CertModel.findOne();
+  if (cert) {
+    cert = JSON.parse(cert.cert);
     let headers = req.headers;
     let header_wechat = Object.keys(headers)
       .filter((header) => header.startsWith('wechatpay-'))
@@ -87,8 +86,9 @@ const notify = asyncHandler(async (req, res) => {
       }, {});
     let { Nonce, Serial, Signature, SignatureType, Timestamp } = header_wechat;
     // //3.检查时间戳是否是五分钟内的
-    if (Math.floor(+new Date() / 1000) - Timestamp > 5 * 60)
+    if (Math.floor(+new Date() / 1000) - Timestamp > 5 * 60) {
       throw new Error('expires req');
+    }
 
     // let isValidSign = await verifyHeaderSign({
     //   msg: joinMessage(Timestamp, Nonce, JSON.stringify(req.body)), //构造验签名串
@@ -101,31 +101,7 @@ const notify = asyncHandler(async (req, res) => {
     let { serial_no, encrypt_certificate } = cert;
     //检查  Wechatpay-Serial 是否一致。若不一致则重新请求证书
     if (header_serial !== serial_no) {
-      throw new Error('unpare cert');
-    }
-    let { ciphertext, associated_data, nonce } = encrypt_certificate;
-
-    const pubKey = exportPubKeyFromCert(
-      decryptWith256AES({ ciphertext, associated_data, nonce })
-    );
-    let msg01 = joinMessage(Timestamp, Nonce, JSON.stringify(req.body));
-    // let signDes = Buffer.from(Signature, 'base64').toString('utf8');
-    if (Rsa.verify(msg01, Signature, pubKey)) {
-      //decrypt body
-      let result = decryptBody(req.body.resource);
-      result = JSON.parse(result);
-      console.log(result, 'wxNotify');
-      const notifyFeedback = axios.post(
-        'https://freedoll.whtec.net/api/payment/wxGZHpayment',
-        {
-          ...result,
-        }
-      );
-      console.log(notifyFeedback.data, '<<notifyFeedback');
-      return res.send('ok');
-    } else {
       //update cert in DB from official chanel
-
       let { data } = await axios.get(BASE_API + pathName, {
         headers: {
           Accept: 'application/json',
@@ -136,7 +112,30 @@ const notify = asyncHandler(async (req, res) => {
         cert: JSON.stringify(data.data[0]),
         timeStamp: new Date().getTime(),
       }).save();
-      return new Error('update cert in DB');
+      res.status(401); //terminal request,wait for next repeat notify
+      throw new Error('update cert in DB');
+    }
+    let { ciphertext, associated_data, nonce } = encrypt_certificate;
+
+    const pubKey = exportPubKeyFromCert(
+      decryptWith256AES({ ciphertext, associated_data, nonce })
+    );
+    let msg01 = joinMessage(Timestamp, Nonce, JSON.stringify(req.body));
+    // let signDes = Buffer.from(Signature, 'base64').toString('utf8');
+    if (Rsa.verify(msg01, Signature, pubKey)) {
+      //decrypt body
+      let wxPayResult = JSON.parse(decryptBody(req.body.resource));
+      let notifyFeedback = await axios.post(
+        'https://freedoll.whtec.net/api/payment/wxGZHpayment',
+        {
+          ...wxPayResult,
+          ...JSON.parse(wxPayResult.attach),
+        }
+      );
+      return res.send(notifyFeedback.data);
+    } else {
+      res.status(401);
+      throw new Error('verify error');
     }
   } else {
     //get cert firstly
@@ -152,6 +151,31 @@ const notify = asyncHandler(async (req, res) => {
     }).save();
     return new Error("certificate haven't get");
   }
+});
+
+// @desc    query wx payment result actively
+// @route   POST /payment/queryTransaction
+// @access  Public
+// @ this api have been used in production
+const queryTransaction = asyncHandler(async (req, res) => {
+  //https://api.mch.weixin.qq.com
+  ///v3/pay/transactions/id/{transaction_id}
+  const { transaction_id } = req.query;
+  let timeStamp = util.getTimeStamp();
+  let nonceStr = util.getGuid();
+  const queryURL = `https://api.mch.weixin.qq.com/v3/pay/transactions/id/${transaction_id}?mchid=${process.env.MCHID}`;
+  const { pathname, search } = new URL(queryURL);
+  let message = joinMessage('GET', pathname + search, timeStamp, nonceStr, '');
+  //签名
+  let signature = calcSign(message);
+  let authMessage = joinAuthMessage(timeStamp, nonceStr, signature);
+  let { data } = await axios.get(queryURL, {
+    headers: {
+      Accept: 'application/json',
+      Authorization: 'WECHATPAY2-SHA256-RSA2048' + ' ' + authMessage,
+    },
+  });
+  res.send(true);
 });
 
 /**
@@ -230,4 +254,4 @@ function base64toStr(signature) {
 /**
  * help function end
  */
-export { prepay, notify };
+export { prepay, notify, queryTransaction };
